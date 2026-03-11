@@ -8,39 +8,53 @@ st.set_page_config(page_title="Copilot Planeación", layout="wide")
 
 st.title("📦 Copilot de Planeación de Demanda")
 
-archivo = "FORMATO PEDIDOS CARGA SECA.xlsm"
+# ------------------------------------------------
+# CARGAR ARCHIVO
+# ------------------------------------------------
+
+archivo = st.file_uploader(
+    "Sube el archivo de pedidos",
+    type=["xlsx", "xlsm"]
+)
+
+if archivo is None:
+    st.info("⬆️ Sube el archivo Excel para iniciar el análisis")
+    st.stop()
 
 # ------------------------------------------------
 # CARGA DATOS
 # ------------------------------------------------
 
 @st.cache_data(ttl=300)
-def cargar_datos():
+def cargar_datos(archivo):
 
-    df = pd.read_excel(
-        archivo,
-        sheet_name="MONTAJE",
-        header=3
-    )
+    try:
 
-    # limpiar nombres columnas
-    df.columns = df.columns.astype(str).str.strip()
+        df = pd.read_excel(
+            archivo,
+            sheet_name="MONTAJE",
+            header=3,
+            engine="openpyxl"
+        )
 
-    # eliminar columnas vacías Excel
-    df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
+        df.columns = df.columns.astype(str).str.strip()
 
-    # eliminar columnas nan
-    df = df.loc[:, df.columns != "nan"]
+        df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
+        df = df.loc[:, df.columns != "nan"]
+        df = df.loc[:, ~df.columns.duplicated()]
 
-    # eliminar columnas duplicadas
-    df = df.loc[:, ~df.columns.duplicated()]
+        df = df.reset_index(drop=True)
 
-    df = df.reset_index(drop=True)
+        return df
 
-    return df
+    except Exception as e:
+
+        st.error("❌ No se pudo leer el archivo Excel")
+        st.write(e)
+        st.stop()
 
 
-df = cargar_datos()
+df = cargar_datos(archivo)
 
 # ------------------------------------------------
 # LIMPIEZA
@@ -50,13 +64,29 @@ df["Vig"] = df["Vig"].astype(str).str.strip().str.upper()
 df = df[df["Vig"] != "NO"]
 
 # ------------------------------------------------
+# DETECTAR COLUMNA INVENTARIO
+# ------------------------------------------------
+
+col_inv = None
+
+for c in df.columns:
+    if "inv" in c.lower():
+        col_inv = c
+        break
+
+if col_inv is None:
+    st.error("❌ No se encontró columna de inventario")
+    st.write("Columnas detectadas:", df.columns.tolist())
+    st.stop()
+
+# ------------------------------------------------
 # INVENTARIO TOTAL
 # ------------------------------------------------
 
 if "Transito" in df.columns:
-    df["Inventario total"] = df["Inv 11 Mar"] + df["Transito"]
+    df["Inventario total"] = df[col_inv] + df["Transito"]
 else:
-    df["Inventario total"] = df["Inv 11 Mar"]
+    df["Inventario total"] = df[col_inv]
 
 # ------------------------------------------------
 # DEMANDA DIARIA
@@ -71,7 +101,7 @@ df["Demanda diaria"] = df["Prom Pond"] / 7
 df["Cob"] = (
     df["Inventario total"] /
     df["Demanda diaria"]
-).replace([float("inf")],0).fillna(0).round(1)
+).replace([float("inf")], 0).fillna(0).round(1)
 
 # ------------------------------------------------
 # CLASIFICACIÓN COBERTURA
@@ -142,31 +172,31 @@ if planeador:
 # KPIs
 # ------------------------------------------------
 
-inventario_total = round(df_filtro["Inventario total"].sum(),0)
-demanda_prom = round(df_filtro["Prom Pond"].mean(),1)
-cobertura_red = round(df_filtro["Cob"].median(),1)
+inventario_total = round(df_filtro["Inventario total"].sum(), 0)
+demanda_prom = round(df_filtro["Prom Pond"].mean(), 1)
+cobertura_red = round(df_filtro["Cob"].median(), 1)
 
 quiebres = df_filtro[df_filtro["Estado"] == "QUIEBRE"]
 
 st.subheader("Indicadores de la red")
 
-col1,col2,col3,col4 = st.columns(4)
+col1, col2, col3, col4 = st.columns(4)
 
-col1.metric("Inventario total",inventario_total)
-col2.metric("Demanda semanal promedio",demanda_prom)
-col3.metric("Cobertura red (días)",cobertura_red)
-col4.metric("Materiales en quiebre",len(quiebres))
+col1.metric("Inventario total", inventario_total)
+col2.metric("Demanda semanal promedio", demanda_prom)
+col3.metric("Cobertura red (días)", cobertura_red)
+col4.metric("Materiales en quiebre", len(quiebres))
 
 # ------------------------------------------------
 # TABS
 # ------------------------------------------------
 
-tab1,tab2,tab3,tab4,tab5 = st.tabs([
-"Dashboard",
-"Riesgos",
-"Sobrestock",
-"Copilot",
-"Pedido sugerido"
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Dashboard",
+    "Riesgos",
+    "Sobrestock",
+    "Copilot",
+    "Pedido sugerido"
 ])
 
 # ------------------------------------------------
@@ -189,7 +219,7 @@ with tab1:
         title="Cobertura mediana por distrito"
     )
 
-    st.plotly_chart(fig,use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
 # ------------------------------------------------
 # RIESGOS
@@ -201,7 +231,7 @@ with tab2:
 
     riesgo = (
         df_filtro
-        .groupby(["Distrito","Estado"])
+        .groupby(["Distrito", "Estado"])
         .size()
         .reset_index(name="Materiales")
     )
@@ -220,14 +250,14 @@ with tab2:
         riesgo["Total"] * 100
     ).round(1)
 
-    riesgo = riesgo.sort_values("Porcentaje",ascending=False)
+    riesgo = riesgo.sort_values("Porcentaje", ascending=False)
 
     st.dataframe(riesgo)
 
     st.subheader("Detalle materiales en riesgo")
 
     detalle = df_filtro[
-        df_filtro["Estado"].isin(["QUIEBRE","PELIGRO"])
+        df_filtro["Estado"].isin(["QUIEBRE", "PELIGRO"])
     ]
 
     st.dataframe(detalle)
@@ -266,25 +296,19 @@ with tab4:
 
         pregunta = pregunta.lower()
 
-        material = re.findall(r"\d{6,}",pregunta)
+        material = re.findall(r"\d{6,}", pregunta)
         material = material[0] if material else None
 
-        pdv = re.findall(r"\d{2,}",pregunta)
-        pdv = pdv[-1] if len(pdv)>1 else None
+        pdv_text = re.findall(r"\d{2,}", pregunta)
+        pdv_text = pdv_text[-1] if len(pdv_text) > 1 else None
 
         datos = df_filtro.copy()
 
         if material:
+            datos = datos[datos["Material"].astype(str) == material]
 
-            datos = datos[
-                datos["Material"].astype(str)==material
-            ]
-
-        if pdv:
-
-            datos = datos[
-                datos["PDV"].astype(str).str.contains(pdv)
-            ]
+        if pdv_text:
+            datos = datos[datos["PDV"].astype(str).str.contains(pdv_text)]
 
         st.dataframe(datos.head(50))
         st.write("Mostrando primeros 50 resultados")
@@ -312,7 +336,7 @@ with tab5:
         df_calc["Inventario total"]
     )
 
-    df_calc["Necesidad"] = df_calc["Necesidad"].apply(lambda x:max(x,0))
+    df_calc["Necesidad"] = df_calc["Necesidad"].apply(lambda x: max(x, 0))
 
     col_conv = None
 
@@ -324,8 +348,8 @@ with tab5:
 
         df_calc["Pedido sugerido"] = df_calc.apply(
             lambda x:
-            math.ceil(x["Necesidad"]/x[col_conv]) * x[col_conv]
-            if x["Necesidad"]>0 else 0,
+            math.ceil(x["Necesidad"] / x[col_conv]) * x[col_conv]
+            if x["Necesidad"] > 0 else 0,
             axis=1
         )
 
@@ -341,11 +365,7 @@ with tab5:
     df_calc["Cobertura futura"] = (
         df_calc["Inventario futuro"] /
         df_calc["Demanda diaria"]
-    ).replace([float("inf")],0).fillna(0).round(1)
-
-    df_calc["Necesidad"] = df_calc["Necesidad"].round(0)
-    df_calc["Pedido sugerido"] = df_calc["Pedido sugerido"].round(0)
-    df_calc["Inventario futuro"] = df_calc["Inventario futuro"].round(0)
+    ).replace([float("inf")], 0).fillna(0).round(1)
 
     st.dataframe(df_calc)
 
